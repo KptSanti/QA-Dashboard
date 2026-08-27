@@ -1,0 +1,15 @@
+{
+  "name": "qa-workspace-saas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Feature-centered QA workspace with Confluence-inspired documentation and Playwright-ready traceability.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
