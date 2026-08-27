@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Feature-centered QA workspace">
+  <title>QA Workspace</title>
+  <link rel="stylesheet" href="/styles.css?v=automation-cli-20260827">
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <header class="topbar">
+      <button class="brand" data-route="#/home" aria-label="Go to workspace home">
+        <span class="brand-mark">Q</span>
+        <span class="brand-name">Qualispace</span>
+      </button>
+      <button id="workspace-switcher" class="workspace-switcher">
+        <span id="workspace-name">Team 1 QA Workspace</span>
+        <span aria-hidden="true">⌄</span>
+      </button>
+      <div class="global-search-wrap">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input id="global-search" class="global-search" type="search" placeholder="Search pages and features" autocomplete="off" aria-label="Search workspace">
+        <kbd>Ctrl K</kbd>
+        <div id="search-results" class="search-results" hidden></div>
+      </div>
+      <button id="global-create" class="primary-button">Create</button>
+      <button class="icon-button" title="Notifications" aria-label="Notifications">○</button>
+      <button id="account-button" class="avatar-button" title="Account">PN</button>
+    </header>
+
+    <aside class="sidebar" aria-label="Workspace navigation">
+      <nav id="sidebar-nav"></nav>
+      <footer class="sidebar-footer">
+        <button class="sidebar-link" data-route="#/settings"><span class="nav-icon">⚙</span>Workspace settings</button>
+      </footer>
+    </aside>
+
+    <main id="main-content" class="main-content" tabindex="-1">
+      <div class="loading-state">
+        <span class="spinner"></span>
+        <p>Opening your workspace...</p>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <dialog id="create-dialog" class="modal">
+    <form id="create-form" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">New content</p>
+          <h2>Create a page</h2>
+        </div>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Close">×</button>
+      </div>
+      <label>Page title<input name="title" required maxlength="120" placeholder="Untitled page"></label>
+      <label>Template<select name="template_id" id="create-template"></select></label>
+      <label>Space<select name="space_id" id="create-space"></select></label>
+      <label>Parent page<select name="parent_id" id="create-parent"><option value="">No parent page</option></select></label>
+      <label>Linked feature<select name="linked_feature_id" id="create-feature"><option value="">No feature link yet</option></select></label>
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
+        <button type="submit" class="primary-button">Create page</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="record-dialog" class="modal">
+    <form id="record-form" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">QA tracker</p>
+          <h2 id="record-dialog-title">Add record</h2>
+        </div>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Close">×</button>
+      </div>
+      <input name="kind" type="hidden">
+      <label>Title<input name="title" required maxlength="180" placeholder="Describe the QA item"></label>
+      <label>Feature<select name="feature_id" id="record-feature" required></select></label>
+      <div id="record-extra-fields"></div>
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
+        <button type="submit" class="primary-button">Add record</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="share-dialog" class="modal">
+    <form id="share-form" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">Page access</p>
+          <h2>Share page</h2>
+        </div>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Close">×</button>
+      </div>
+      <input name="document_id" type="hidden">
+      <label>Workspace member<select name="user_id" id="share-user" required></select></label>
+      <label>Access<select name="access_level"><option>Viewer</option><option>Commenter</option><option>Editor</option><option value="">Remove access</option></select></label>
+      <div id="current-shares"></div>
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
+        <button type="submit" class="primary-button">Update access</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="run-dialog" class="modal">
+    <form id="run-form" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">Playwright execution</p>
+          <h2>Request a test run</h2>
+        </div>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Close">×</button>
+      </div>
+      <div class="local-adapter-note"><strong>Local demo adapter</strong><span>Uses mapped sample assets only. No repository code is executed.</span></div>
+      <label>Run scope<select name="run_type" id="run-type"><option>Smoke</option><option>Feature</option><option>Individual</option><option>E2E</option><option>Regression</option></select></label>
+      <label>Automation type<select name="automation_type"><option>All</option><option>Browser</option><option>API</option><option>MCP</option></select></label>
+      <label>Feature scope<select name="feature_id" id="run-feature"><option value="">Not required for this run type</option></select></label>
+      <label>Individual test case<select name="test_case_id" id="run-test-case"><option value="">Not required for this run type</option></select></label>
+      <label>Repository<select name="repository_id" id="run-repository" required></select></label>
+      <div class="content-grid">
+        <label>Environment<select name="environment"><option>QA</option><option>Staging</option><option>Preview</option></select></label>
+        <label>Playwright project<select name="project_name"><option>chromium</option><option>firefox</option><option>webkit</option><option>all</option></select></label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
+        <button type="submit" class="primary-button">Queue run</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js?v=automation-cli-20260827" defer></script>
+</body>
+</html>
