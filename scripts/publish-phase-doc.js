@@ -3,7 +3,6 @@ const fs = require('node:fs');
 const base = process.env.QA_BASE_URL || 'http://127.0.0.1:4173';
 const sourcePath = process.argv[2];
 const title = process.argv[3];
-if (!sourcePath || !title) throw new Error('Usage: node scripts/publish-phase-doc.js <markdown-file> <page-title>');
 
 function inline(value) {
   return value
@@ -12,12 +11,25 @@ function inline(value) {
     .replace(/`([^`]+)`/g, '<code>$1</code>');
 }
 
+function tableCells(line) {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/).map(cell => cell.trim().replaceAll('\\|', '|'));
+}
+
+function markdownTable(lines) {
+  const rows = lines.map(tableCells);
+  if (rows.length < 2 || rows[0].length < 2 || rows[1].length !== rows[0].length || !rows[1].every(cell => /^:?-{3,}:?$/.test(cell))) return null;
+  const alignments = rows[1].map(cell => cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : 'left');
+  const cells = (row, tag) => alignments.map((alignment, index) => `<${tag} data-align="${alignment}"${tag === 'th' ? ' scope="col"' : ''}>${inline(row[index] || '')}</${tag}>`).join('');
+  return `<table><thead><tr>${cells(rows[0], 'th')}</tr></thead><tbody>${rows.slice(2).map(row => `<tr>${cells(row, 'td')}</tr>`).join('')}</tbody></table>`;
+}
+
 function markdownToHtml(markdown) {
   const lines = markdown.replaceAll('\r', '').split('\n');
   const output = [];
   let list = null;
   const closeList = () => { if (list) output.push(`</${list}>`); list = null; };
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (!line.trim()) { closeList(); continue; }
     const heading = line.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
@@ -36,7 +48,15 @@ function markdownToHtml(markdown) {
     }
     if (line.startsWith('|')) {
       closeList();
-      output.push(`<pre>${inline(line)}</pre>`);
+      const tableLines = [];
+      while (index < lines.length && lines[index].trim().startsWith('|')) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      index -= 1;
+      const table = markdownTable(tableLines);
+      if (table) output.push(table);
+      else for (const tableLine of tableLines) output.push(`<pre>${inline(tableLine)}</pre>`);
       continue;
     }
     closeList();
@@ -47,6 +67,7 @@ function markdownToHtml(markdown) {
 }
 
 async function main() {
+  if (!sourcePath || !title) throw new Error('Usage: node scripts/publish-phase-doc.js <markdown-file> <page-title>');
   const login = await fetch(`${base}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -76,4 +97,6 @@ async function main() {
   console.log(`${existing ? 'Updated' : 'Created'} ${document.id}`);
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+
+module.exports = { markdownToHtml };

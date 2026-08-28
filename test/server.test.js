@@ -106,6 +106,151 @@ test('document lifecycle supports create, autosave, version, trash, and restore'
   });
 });
 
+test('document folders organize pages and titles stay unique within a space', async () => {
+  await withServer(async base => {
+    await login(base);
+    const folderResult = await request(base, '/api/folders', {
+      method: 'POST',
+      body: JSON.stringify({ space_id: 'space-qa', name: 'Regression guides' })
+    });
+    assert.equal(folderResult.response.status, 201);
+
+    const created = await request(base, '/api/documents', {
+      method: 'POST',
+      body: JSON.stringify({ space_id: 'space-qa', folder_id: folderResult.body.id, title: 'Regression strategy', content: '<h2>Scope</h2>' })
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.body.folder_id, folderResult.body.id);
+
+    const duplicate = await request(base, '/api/documents', {
+      method: 'POST',
+      body: JSON.stringify({ space_id: 'space-qa', title: 'regression STRATEGY' })
+    });
+    assert.equal(duplicate.response.status, 409);
+    assert.match(duplicate.body.error, /unique title/i);
+
+    const bootstrap = await request(base, '/api/bootstrap');
+    assert.ok(bootstrap.body.documentFolders.some(folder => folder.id === folderResult.body.id));
+  });
+});
+
+test('publishing is atomic and later edits return the document to Draft', async () => {
+  await withServer(async base => {
+    await login(base);
+    const created = await request(base, '/api/documents', {
+      method: 'POST',
+      body: JSON.stringify({ space_id: 'space-qa', title: 'Publishing contract', content: '<h2>First edition</h2>' })
+    });
+    const published = await request(base, `/api/documents/${created.body.id}/publish`, {
+      method: 'POST',
+      body: JSON.stringify({ change_summary: 'Approved for team use' })
+    });
+    assert.equal(published.response.status, 200);
+    assert.equal(published.body.status, 'Published');
+    assert.ok(published.body.published_version_id);
+    assert.equal(published.body.published_version.status, 'Published');
+
+    const edited = await request(base, `/api/documents/${created.body.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: '<h2>Second edition draft</h2>', status: 'Published', create_version: false })
+    });
+    assert.equal(edited.response.status, 200);
+    assert.equal(edited.body.status, 'Draft');
+    assert.equal(edited.body.published_version.content, '<h2>First edition</h2>');
+
+    const republished = await request(base, `/api/documents/${created.body.id}/publish`, { method: 'POST', body: '{}' });
+    assert.equal(republished.body.status, 'Published');
+    assert.equal(republished.body.published_version.content, '<h2>Second edition draft</h2>');
+  });
+});
+
+test('folder lifecycle prevents cycles and non-empty deletion', async () => {
+  await withServer(async base => {
+    await login(base);
+    const root = await request(base, '/api/folders', { method: 'POST', body: JSON.stringify({ space_id: 'space-qa', name: 'Backend guides' }) });
+    const child = await request(base, '/api/folders', { method: 'POST', body: JSON.stringify({ space_id: 'space-qa', parent_folder_id: root.body.id, name: 'API notes' }) });
+
+    const cycle = await request(base, `/api/folders/${root.body.id}`, { method: 'PUT', body: JSON.stringify({ parent_folder_id: child.body.id }) });
+    assert.equal(cycle.response.status, 400);
+    const nonEmptyDelete = await request(base, `/api/folders/${root.body.id}`, { method: 'DELETE' });
+    assert.equal(nonEmptyDelete.response.status, 409);
+
+    const renamed = await request(base, `/api/folders/${child.body.id}`, { method: 'PUT', body: JSON.stringify({ name: 'Service contracts' }) });
+    assert.equal(renamed.body.name, 'Service contracts');
+    assert.equal((await request(base, `/api/folders/${child.body.id}`, { method: 'DELETE' })).response.status, 200);
+    assert.equal((await request(base, `/api/folders/${root.body.id}`, { method: 'DELETE' })).response.status, 200);
+  });
+});
+
+test('document move preserves identity, versions, and comments', async () => {
+  await withServer(async base => {
+    await login(base);
+    const folder = await request(base, '/api/folders', { method: 'POST', body: JSON.stringify({ space_id: 'space-product', name: 'Moved specifications' }) });
+    const created = await request(base, '/api/documents', { method: 'POST', body: JSON.stringify({ space_id: 'space-personal', title: 'Move-safe draft', content: '<p>Original</p>' }) });
+    await request(base, `/api/documents/${created.body.id}`, { method: 'PUT', body: JSON.stringify({ content: '<p>Reviewed</p>', create_version: true }) });
+    await request(base, `/api/documents/${created.body.id}/comments`, { method: 'POST', body: JSON.stringify({ body: 'Keep this discussion' }) });
+
+    const moved = await request(base, `/api/documents/${created.body.id}/move`, { method: 'POST', body: JSON.stringify({ space_id: 'space-product', folder_id: folder.body.id }) });
+    assert.equal(moved.response.status, 200);
+    assert.equal(moved.body.id, created.body.id);
+    assert.equal(moved.body.space_id, 'space-product');
+    assert.equal(moved.body.folder_id, folder.body.id);
+    assert.equal((await request(base, `/api/documents/${created.body.id}/versions`)).body.versions.length, 2);
+    assert.equal((await request(base, `/api/documents/${created.body.id}/comments`)).body.comments[0].body, 'Keep this discussion');
+  });
+});
+
+test('personal folder discovery exposes only folders containing shared documents', async () => {
+  await withServer(async base => {
+    const owner = await login(base);
+    const sharedFolder = await request(base, '/api/folders', { auth: owner, method: 'POST', body: JSON.stringify({ space_id: 'space-personal', name: 'Shared research' }) });
+    const secretFolder = await request(base, '/api/folders', { auth: owner, method: 'POST', body: JSON.stringify({ space_id: 'space-personal', name: 'Private research' }) });
+    const sharedDocument = await request(base, '/api/documents', { auth: owner, method: 'POST', body: JSON.stringify({ space_id: 'space-personal', folder_id: sharedFolder.body.id, title: 'Visible research' }) });
+    const secretDocument = await request(base, '/api/documents', { auth: owner, method: 'POST', body: JSON.stringify({ space_id: 'space-personal', folder_id: secretFolder.body.id, title: 'Secret research' }) });
+    await request(base, `/api/documents/${sharedDocument.body.id}/permissions`, { auth: owner, method: 'PUT', body: JSON.stringify({ user_id: 'user-mira', access_level: 'Viewer' }) });
+
+    const mira = await login(base, 'mira@qualispace.local', false);
+    const bootstrap = await request(base, '/api/bootstrap', { auth: mira });
+    assert.ok(bootstrap.body.documentFolders.some(folder => folder.id === sharedFolder.body.id));
+    assert.ok(!bootstrap.body.documentFolders.some(folder => folder.id === secretFolder.body.id));
+    assert.equal((await request(base, `/api/documents/${secretDocument.body.id}`, { auth: mira })).response.status, 404);
+  });
+});
+
+test('document read APIs support pagination, enriched search, and version comparison', async () => {
+  await withServer(async base => {
+    await login(base);
+    const created = await request(base, '/api/documents', {
+      method: 'POST',
+      body: JSON.stringify({ space_id: 'space-qa', folder_id: 'FOLDER-QA-GUIDES', title: 'API pagination reference', content: '<p>A distinctive backend-search phrase appears here.</p>' })
+    });
+    await request(base, `/api/documents/${created.body.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: '<p>A revised distinctive backend-search phrase appears here.</p>', create_version: true, change_summary: 'Revise reference' })
+    });
+
+    const detail = await request(base, `/api/documents/${created.body.id}`);
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.body.folder_name, 'Team playbooks');
+
+    const list = await request(base, '/api/documents?space_id=space-qa&folder_id=FOLDER-QA-GUIDES&page=1&limit=1');
+    assert.equal(list.response.status, 200);
+    assert.equal(list.body.limit, 1);
+    assert.equal(list.body.documents.length, 1);
+    assert.ok(list.body.total >= 2);
+
+    const search = await request(base, '/api/search?q=backend-search');
+    const result = search.body.results.find(item => item.id === created.body.id);
+    assert.equal(result.folder_name, 'Team playbooks');
+    assert.match(result.excerpt, /backend-search/);
+
+    const versions = await request(base, `/api/documents/${created.body.id}/versions`);
+    const comparison = await request(base, `/api/documents/${created.body.id}/compare?from=${versions.body.versions[1].id}&to=${versions.body.versions[0].id}`);
+    assert.equal(comparison.response.status, 200);
+    assert.equal(comparison.body.changes.content_changed, true);
+  });
+});
+
 test('feature-linked QA records can be added', async () => {
   await withServer(async base => {
     await login(base);

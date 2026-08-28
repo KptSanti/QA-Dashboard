@@ -4,27 +4,28 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Feature-centered QA workspace">
-  <title>QA Workspace</title>
-  <link rel="stylesheet" href="/styles.css?v=automation-cli-20260827">
+  <title>QA Space</title>
+  <link rel="stylesheet" href="/styles.css?v=document-tables-20260828">
 </head>
 <body>
-  <div id="app-shell" class="app-shell">
+  <div id="app-shell" class="app-shell booting">
     <header class="topbar">
       <button class="brand" data-route="#/home" aria-label="Go to workspace home">
-        <span class="brand-mark">Q</span>
-        <span class="brand-name">Qualispace</span>
+        <span class="brand-mark"><span>Q</span></span>
+        <span class="brand-name">QA Space</span>
       </button>
       <button id="workspace-switcher" class="workspace-switcher">
-        <span id="workspace-name">Team 1 QA Workspace</span>
+        <span id="workspace-name">Team 1 QA Space</span>
         <span aria-hidden="true">⌄</span>
       </button>
+      <span class="environment-indicator" title="Local QA environment"><i aria-hidden="true"></i> Local QA</span>
       <div class="global-search-wrap">
         <span class="search-icon" aria-hidden="true">⌕</span>
-        <input id="global-search" class="global-search" type="search" placeholder="Search pages and features" autocomplete="off" aria-label="Search workspace">
+        <input id="global-search" class="global-search" type="search" placeholder="Search documents and features" autocomplete="off" aria-label="Search workspace">
         <kbd>Ctrl K</kbd>
         <div id="search-results" class="search-results" hidden></div>
       </div>
-      <button id="global-create" class="primary-button">Create</button>
+      <button id="global-create" class="primary-button">New document</button>
       <button class="icon-button" title="Notifications" aria-label="Notifications">○</button>
       <button id="account-button" class="avatar-button" title="Account">PN</button>
     </header>
@@ -51,18 +52,37 @@
       <div class="modal-header">
         <div>
           <p class="eyebrow">New content</p>
-          <h2>Create a page</h2>
+          <h2>Create a document</h2>
         </div>
         <button type="button" class="icon-button" data-close-dialog aria-label="Close">×</button>
       </div>
-      <label>Page title<input name="title" required maxlength="120" placeholder="Untitled page"></label>
+      <label>Unique document title<input name="title" required maxlength="120" placeholder="Untitled document"></label>
       <label>Template<select name="template_id" id="create-template"></select></label>
       <label>Space<select name="space_id" id="create-space"></select></label>
-      <label>Parent page<select name="parent_id" id="create-parent"><option value="">No parent page</option></select></label>
+      <label>Folder<select name="folder_id" id="create-folder"><option value="">Documents home</option></select></label>
       <label>Linked feature<select name="linked_feature_id" id="create-feature"><option value="">No feature link yet</option></select></label>
       <div class="modal-actions">
         <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
-        <button type="submit" class="primary-button">Create page</button>
+        <button type="submit" class="primary-button">Create document</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="folder-dialog" class="modal">
+    <form id="folder-form" method="dialog">
+      <div class="modal-header">
+        <div>
+          <p class="eyebrow">Organize knowledge</p>
+          <h2>Create a folder</h2>
+        </div>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Close">&times;</button>
+      </div>
+      <label>Folder name<input name="name" required maxlength="80" placeholder="e.g. Test strategies"></label>
+      <label>Space<select name="space_id" id="folder-space" required></select></label>
+      <label>Inside folder<select name="parent_folder_id" id="folder-parent"><option value="">Documents home</option></select></label>
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close-dialog>Cancel</button>
+        <button type="submit" class="primary-button">Create folder</button>
       </div>
     </form>
   </dialog>
@@ -133,6 +153,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=automation-cli-20260827" defer></script>
+  <script src="/app.js?v=document-tables-20260828" defer></script>
 </body>
 </html>

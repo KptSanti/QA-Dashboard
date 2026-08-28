@@ -1,6 +1,6 @@
-# Qualispace QA Workspace
+# QA Space
 
-A locally runnable MVP of the feature-centered QA SaaS plan. It combines a Confluence-inspired documentation workspace with feature traceability, test management, risk, coverage, release readiness, defects, metrics, automation backlog, and capacity views.
+A locally runnable MVP of a feature-centered QA SaaS. It combines an original folder-based documentation system with feature traceability, test management, risk, coverage, release readiness, defects, metrics, automation backlog, and capacity views.
 
 ## Run locally
 
@@ -35,7 +35,8 @@ npm test
 
 - Persistent organizations, workspaces, spaces, features, and QA records
 - Personal and shared documentation spaces
-- Nested page tree, rich-text editing, autosave, explicit versions, version restoration, Trash, and restore
+- Nested folders and document trees with full folder lifecycle, transactional moves, Trash, and conflict-safe restore
+- Draft-to-published workflow with immutable published-version pointers, autosave, version comparison, and restoration to Draft
 - Reusable feature, test-plan, and release-readiness page templates
 - Page comments with open and resolved states
 - Feature and release linking
@@ -46,13 +47,22 @@ npm test
 - Browser, API, MCP, and combined automation type selection with explicit feature/test-case mappings
 - Audited asynchronous run lifecycle, result evidence, and idempotent ingestion
 - Safe local demo adapter that never executes arbitrary repository code in the SaaS service
-- Workspace search
+- Paginated document reads and permission-filtered search with folder, space, and excerpt metadata
 - Email/password login with salted scrypt hashes and HTTP-only sessions
 - CSRF protection, session expiry, logout revocation, and authentication auditing
 - Role-based document and QA authorization
 - Enforced personal-space privacy and page-level Viewer, Commenter, and Editor sharing
 - Tenant-aware schema, filtered search, audit activity, security headers, and CI-safe Playwright integration model
-- Responsive, content-first, Confluence-inspired UI without AI-dashboard visual patterns
+- Responsive, content-first editorial UI with a distinct QA Space visual identity
+
+### Document API
+
+- `GET/POST /api/documents` — filtered, paginated listing and creation
+- `GET/PUT/DELETE /api/documents/:id` — authorized detail, editing, and Trash
+- `POST /api/documents/:id/publish` — atomic publication and immutable version capture
+- `POST /api/documents/:id/move` and `POST /api/documents/:id/restore` — history-preserving moves and restore
+- `GET /api/documents/:id/versions`, `GET /api/documents/:id/versions/:versionId`, and `GET /api/documents/:id/compare` — version history and comparison
+- `GET/POST /api/folders` and `GET/PUT/DELETE /api/folders/:id` — authorized folder lifecycle
 
 ## Current boundary
 
