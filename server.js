@@ -8,6 +8,15 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DEFAULT_DB_PATH = path.join(ROOT, 'data', 'qa-workspace.db');
 
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const DOCUMENT_STATUSES = new Set(['Draft', 'In Review', 'Approved', 'Published', 'Archived']);
+
 function now() {
   return new Date().toISOString();
 }
@@ -104,6 +113,15 @@ function openDatabase(dbPath = DEFAULT_DB_PATH) {
       is_trashed INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS document_folders (
+      id TEXT PRIMARY KEY,
+      space_id TEXT NOT NULL REFERENCES spaces(id),
+      parent_folder_id TEXT REFERENCES document_folders(id),
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      created_by TEXT
     );
     CREATE TABLE IF NOT EXISTS document_versions (
       id TEXT PRIMARY KEY,
@@ -323,11 +341,55 @@ function openDatabase(dbPath = DEFAULT_DB_PATH) {
     );
   `);
   migrateAutomationSchema(db);
+  migrateDocumentationSchema(db);
   seed(db);
+  seedDocumentFolders(db);
   seedDocumentationReferenceData(db);
   seedSecurityReferenceData(db);
   seedAutomationReferenceData(db);
   return db;
+}
+
+function migrateDocumentationSchema(db) {
+  const documentColumns = new Set(db.prepare(`PRAGMA table_info(documents)`).all().map(column => column.name));
+  if (!documentColumns.has('folder_id')) db.exec(`ALTER TABLE documents ADD COLUMN folder_id TEXT REFERENCES document_folders(id)`);
+  if (!documentColumns.has('published_version_id')) db.exec(`ALTER TABLE documents ADD COLUMN published_version_id TEXT REFERENCES document_versions(id)`);
+  if (!documentColumns.has('published_at')) db.exec(`ALTER TABLE documents ADD COLUMN published_at TEXT`);
+  if (!documentColumns.has('published_by')) db.exec(`ALTER TABLE documents ADD COLUMN published_by TEXT`);
+  if (!documentColumns.has('deleted_at')) db.exec(`ALTER TABLE documents ADD COLUMN deleted_at TEXT`);
+  if (!documentColumns.has('deleted_by')) db.exec(`ALTER TABLE documents ADD COLUMN deleted_by TEXT`);
+  const folderColumns = new Set(db.prepare(`PRAGMA table_info(document_folders)`).all().map(column => column.name));
+  if (!folderColumns.has('updated_at')) db.exec(`ALTER TABLE document_folders ADD COLUMN updated_at TEXT`);
+  if (!folderColumns.has('created_by')) db.exec(`ALTER TABLE document_folders ADD COLUMN created_by TEXT`);
+  db.prepare(`UPDATE document_folders SET updated_at = COALESCE(updated_at, created_at)`).run();
+  db.exec(`UPDATE documents
+    SET published_version_id = (SELECT v.id FROM document_versions v WHERE v.document_id = documents.id ORDER BY v.version_number DESC LIMIT 1),
+        published_at = COALESCE(published_at, (SELECT v.created_at FROM document_versions v WHERE v.document_id = documents.id ORDER BY v.version_number DESC LIMIT 1)),
+        published_by = COALESCE(published_by, (SELECT v.author_name FROM document_versions v WHERE v.document_id = documents.id ORDER BY v.version_number DESC LIMIT 1))
+    WHERE status = 'Published' AND published_version_id IS NULL`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS document_title_per_space ON documents(space_id, title COLLATE NOCASE) WHERE is_trashed = 0`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS folder_name_per_parent ON document_folders(space_id, COALESCE(parent_folder_id, ''), name COLLATE NOCASE)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS documents_folder_updated ON documents(space_id, folder_id, is_trashed, updated_at DESC)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS documents_status_updated ON documents(space_id, status, is_trashed, updated_at DESC)`);
+}
+
+function seedDocumentFolders(db) {
+  const timestamp = now();
+  db.prepare(`UPDATE workspaces SET name = 'Team 1 QA Space' WHERE id = 'ws-team-1' AND name = 'Team 1 QA Workspace'`).run();
+  db.prepare(`UPDATE organizations SET name = 'QA Space Demo' WHERE id = 'org-qualispace' AND name = 'Qualispace Demo'`).run();
+  const insert = db.prepare(`INSERT OR IGNORE INTO document_folders (id, space_id, parent_folder_id, name, created_at, updated_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  insert.run('FOLDER-QA-GUIDES', 'space-qa', null, 'Team playbooks', timestamp, timestamp, 'System');
+  insert.run('FOLDER-PRODUCT-SPECS', 'space-product', null, 'Product specifications', timestamp, timestamp, 'System');
+  insert.run('FOLDER-PRODUCT-RESEARCH', 'space-product', null, 'Research notes', timestamp, timestamp, 'System');
+  insert.run('FOLDER-RELEASE-EVIDENCE', 'space-release', null, 'Release evidence', timestamp, timestamp, 'System');
+  db.prepare(`UPDATE documents SET folder_id = 'FOLDER-QA-GUIDES' WHERE id = 'DOC-001' AND folder_id IS NULL`).run();
+  db.prepare(`UPDATE documents SET folder_id = 'FOLDER-PRODUCT-SPECS' WHERE id IN ('DOC-002', 'DOC-003') AND folder_id IS NULL`).run();
+  db.prepare(`UPDATE documents SET folder_id = 'FOLDER-RELEASE-EVIDENCE' WHERE id = 'DOC-005' AND folder_id IS NULL`).run();
+  db.exec(`UPDATE documents
+    SET published_version_id = (SELECT v.id FROM document_versions v WHERE v.document_id = documents.id ORDER BY v.version_number DESC LIMIT 1),
+        published_at = COALESCE(published_at, (SELECT v.created_at FROM document_versions v WHERE v.document_id = documents.id ORDER BY v.version_number DESC LIMIT 1)),
+        published_by = COALESCE(published_by, (SELECT v.author_name FROM document_versions v WHERE v.document_id = documents.id ORDER BY v.version_number DESC LIMIT 1))
+    WHERE status = 'Published' AND published_version_id IS NULL`);
 }
 
 function migrateAutomationSchema(db) {
@@ -361,7 +423,7 @@ function seedAutomationReferenceData(db) {
 function seedSecurityReferenceData(db) {
   const timestamp = now();
   if (db.prepare('SELECT COUNT(*) AS count FROM organizations').get().count === 0) {
-    db.prepare('INSERT INTO organizations VALUES (?, ?, ?, ?)').run('org-qualispace', 'Qualispace Demo', 'qualispace-demo', timestamp);
+    db.prepare('INSERT INTO organizations VALUES (?, ?, ?, ?)').run('org-qualispace', 'QA Space Demo', 'qualispace-demo', timestamp);
   }
   db.prepare('INSERT OR IGNORE INTO workspace_organizations VALUES (?, ?)').run('ws-team-1', 'org-qualispace');
 
@@ -399,7 +461,7 @@ function seed(db) {
   const timestamp = now();
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO workspaces VALUES (?, ?, ?, ?)').run('ws-team-1', 'Team 1 QA Workspace', 'team-1-qa', timestamp);
+    db.prepare('INSERT INTO workspaces VALUES (?, ?, ?, ?)').run('ws-team-1', 'Team 1 QA Space', 'team-1-qa', timestamp);
     const insertSpace = db.prepare('INSERT INTO spaces VALUES (?, ?, ?, ?, ?, ?, ?)');
     insertSpace.run('space-personal', 'ws-team-1', 'Patrick\'s space', 'personal', 'Patrick', 'private', timestamp);
     insertSpace.run('space-qa', 'ws-team-1', 'QA Operations', 'shared', 'Senior QA', 'workspace', timestamp);
@@ -411,7 +473,9 @@ function seed(db) {
     insertFeature.run('FEAT-102', 'ws-team-1', 'Feature-linked QA tracker', '2026.09', 'In Development', 'High', 'Jon Bell', 'On Track', 'Risk, coverage, defects, automation, and capacity connected through feature records.', timestamp);
     insertFeature.run('FEAT-103', 'ws-team-1', 'Playwright execution integration', '2026.10', 'Requirements Review', 'High', 'Sam Rivera', 'Needs Evidence', 'CI-dispatched smoke, feature, E2E, and regression execution with evidence ingestion.', timestamp);
 
-    const insertDoc = db.prepare('INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const insertDoc = db.prepare(`INSERT INTO documents
+      (id, space_id, parent_id, title, content, status, owner_name, linked_feature_id, is_trashed, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const docs = [
       ['DOC-001', 'space-qa', null, 'QA Development Flow and Structure', '<h2>Purpose</h2><p>This page defines how QA engages across the lifecycle of a feature and the standards, reports, and artifacts QA owns.</p><h2>Core principle</h2><p><strong>QA aligns across pods, not within them.</strong> Requirements review is a hard gate, and test authoring runs alongside implementation.</p>', 'Published', 'Senior QA', null],
       ['DOC-002', 'space-product', null, 'Workspace documentation editor', '<h2>Outcome</h2><p>Give every user a private personal space and teams a shared documentation tree with reviewable, versioned pages.</p><h2>Acceptance criteria</h2><ul><li>Personal pages are private by default.</li><li>Published evidence links to a feature.</li><li>Deleted pages remain recoverable during retention.</li></ul>', 'Approved', 'Mira Chen', 'FEAT-101'],
@@ -590,6 +654,49 @@ function canCreateInSpace(db, context, spaceId) {
   return EDIT_DOCUMENT_ROLES.has(context.membership.role);
 }
 
+function spaceInWorkspace(db, context, spaceId) {
+  return db.prepare(`SELECT s.*, so.user_id AS space_owner_id FROM spaces s LEFT JOIN space_owners so ON so.space_id = s.id WHERE s.id = ? AND s.workspace_id = ?`).get(spaceId, context.workspace.id) || null;
+}
+
+function documentTree(db, documentId) {
+  return db.prepare(`WITH RECURSIVE tree(id, depth) AS (
+    SELECT id, 0 FROM documents WHERE id = ?
+    UNION ALL
+    SELECT d.id, tree.depth + 1 FROM documents d JOIN tree ON d.parent_id = tree.id
+  ) SELECT d.*, tree.depth FROM documents d JOIN tree ON tree.id = d.id ORDER BY tree.depth, d.created_at`).all(documentId);
+}
+
+function validateDocumentPlacement(db, documentId, spaceId, folderId, parentId) {
+  if (folderId && !db.prepare(`SELECT id FROM document_folders WHERE id = ? AND space_id = ?`).get(folderId, spaceId)) {
+    throw new HttpError(400, 'The selected folder is not in this space');
+  }
+  if (!parentId) return;
+  if (parentId === documentId) throw new HttpError(400, 'A document cannot be its own parent');
+  const parent = db.prepare(`SELECT id, space_id FROM documents WHERE id = ? AND is_trashed = 0`).get(parentId);
+  if (!parent || parent.space_id !== spaceId) throw new HttpError(400, 'The selected parent document is not in this space');
+  if (documentId) {
+    const descendants = new Set(documentTree(db, documentId).map(document => document.id));
+    if (descendants.has(parentId)) throw new HttpError(400, 'A document cannot be moved beneath one of its descendants');
+  }
+}
+
+function visibleDocumentFolders(db, context, documents) {
+  const spaces = db.prepare(`SELECT s.*, so.user_id AS space_owner_id FROM spaces s LEFT JOIN space_owners so ON so.space_id = s.id WHERE s.workspace_id = ?`).all(context.workspace.id);
+  const readableSpaceIds = new Set(spaces.filter(space => space.type !== 'personal' || space.space_owner_id === context.user.id).map(space => space.id));
+  const visibleFolderIds = new Set();
+  const folders = db.prepare(`SELECT f.* FROM document_folders f JOIN spaces s ON s.id = f.space_id WHERE s.workspace_id = ? ORDER BY f.name`).all(context.workspace.id);
+  for (const folder of folders) if (readableSpaceIds.has(folder.space_id)) visibleFolderIds.add(folder.id);
+  const byId = new Map(folders.map(folder => [folder.id, folder]));
+  for (const document of documents) {
+    let folderId = document.folder_id;
+    while (folderId && !visibleFolderIds.has(folderId)) {
+      visibleFolderIds.add(folderId);
+      folderId = byId.get(folderId)?.parent_folder_id || null;
+    }
+  }
+  return folders.filter(folder => visibleFolderIds.has(folder.id));
+}
+
 function visibleDocuments(db, context) {
   return db.prepare(`SELECT d.* FROM documents d JOIN spaces s ON s.id = d.space_id WHERE s.workspace_id = ? ORDER BY d.updated_at DESC`).all(context.workspace.id)
     .filter(document => canReadDocument(db, context, document.id));
@@ -597,6 +704,7 @@ function visibleDocuments(db, context) {
 
 function bootstrap(db, context) {
   const documents = visibleDocuments(db, context);
+  const documentFolders = visibleDocumentFolders(db, context, documents);
   const accessibleSpaceIds = new Set(documents.map(document => document.space_id));
   const ownedPersonalSpaces = db.prepare(`SELECT s.id FROM spaces s JOIN space_owners so ON so.space_id = s.id WHERE s.workspace_id = ? AND so.user_id = ?`).all(context.workspace.id, context.user.id).map(row => row.id);
   for (const spaceId of ownedPersonalSpaces) accessibleSpaceIds.add(spaceId);
@@ -605,6 +713,7 @@ function bootstrap(db, context) {
     organization: context.organization,
     workspace: context.workspace,
     spaces: db.prepare(`SELECT * FROM spaces WHERE workspace_id = ? ORDER BY CASE type WHEN 'personal' THEN 0 WHEN 'shared' THEN 1 WHEN 'product' THEN 2 ELSE 3 END, name`).all(context.workspace.id).filter(space => space.type !== 'personal' || accessibleSpaceIds.has(space.id)),
+    documentFolders,
     documents,
     documentAccess: Object.fromEntries(documents.map(document => [document.id, documentAccessLevel(db, context, document.id)])),
     features: db.prepare(`SELECT * FROM features WHERE workspace_id = ? ORDER BY CASE priority WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 ELSE 2 END, updated_at DESC`).all(context.workspace.id),
@@ -656,18 +765,55 @@ function logActivity(db, action, entityType, entityId, actor = 'Patrick') {
   db.prepare('INSERT INTO activity VALUES (?, ?, ?, ?, ?, ?, ?)').run(id('act'), 'ws-team-1', actor, action, entityType, entityId, now());
 }
 
+function documentDetail(db, documentId) {
+  const document = db.prepare(`SELECT d.*, s.name AS space_name, s.type AS space_type, f.name AS folder_name
+    FROM documents d
+    JOIN spaces s ON s.id = d.space_id
+    LEFT JOIN document_folders f ON f.id = d.folder_id
+    WHERE d.id = ?`).get(documentId);
+  if (!document) return null;
+  const publishedVersion = document.published_version_id
+    ? db.prepare(`SELECT * FROM document_versions WHERE id = ? AND document_id = ?`).get(document.published_version_id, documentId) || null
+    : null;
+  return { ...document, published_version: publishedVersion };
+}
+
+function listDocuments(db, context, options = {}) {
+  const page = Math.max(1, Number.parseInt(options.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(options.limit, 10) || 30));
+  const includeTrashed = String(options.include_trashed || '').toLowerCase() === 'true';
+  const visible = visibleDocuments(db, context).filter(document => {
+    if (!includeTrashed && document.is_trashed) return false;
+    if (options.space_id && document.space_id !== options.space_id) return false;
+    if (options.folder_id === 'root' && document.folder_id) return false;
+    if (options.folder_id && options.folder_id !== 'root' && document.folder_id !== options.folder_id) return false;
+    if (options.status && document.status !== options.status) return false;
+    const query = String(options.q || '').trim().toLowerCase();
+    return !query || document.title.toLowerCase().includes(query) || String(document.content || '').toLowerCase().includes(query);
+  });
+  const start = (page - 1) * limit;
+  return { documents: visible.slice(start, start + limit).map(document => documentDetail(db, document.id)), total: visible.length, page, limit };
+}
+
 function createDocument(db, body, context) {
   if (!body.space_id || !String(body.title || '').trim()) throw new Error('Space and title are required');
   const documentId = id('DOC');
   const timestamp = now();
   const title = String(body.title).trim();
+  const duplicate = db.prepare(`SELECT id FROM documents WHERE space_id = ? AND title = ? COLLATE NOCASE AND is_trashed = 0`).get(body.space_id, title);
+  if (duplicate) throw new HttpError(409, 'A document with this title already exists in the selected space. Choose a unique title.');
+  validateDocumentPlacement(db, null, body.space_id, body.folder_id || null, body.parent_id || null);
   const template = body.template_id ? db.prepare('SELECT content FROM document_templates WHERE id = ?').get(body.template_id) : null;
   const content = String(body.content || template?.content || '<p>Start writing...</p>');
   const status = String(body.status || 'Draft');
+  if (!DOCUMENT_STATUSES.has(status) || status === 'Published') throw new HttpError(400, 'New documents must begin in a valid unpublished state');
   const owner = context.user.name;
   db.exec('BEGIN');
   try {
-    db.prepare('INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(documentId, body.space_id, body.parent_id || null, title, content, status, owner, body.linked_feature_id || null, 0, timestamp, timestamp);
+    db.prepare(`INSERT INTO documents
+      (id, space_id, parent_id, title, content, status, owner_name, linked_feature_id, is_trashed, created_at, updated_at, folder_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(documentId, body.space_id, body.parent_id || null, title, content, status, owner, body.linked_feature_id || null, 0, timestamp, timestamp, body.folder_id || null);
     db.prepare('INSERT INTO document_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id('ver'), documentId, 1, title, content, status, owner, 'Created page', timestamp);
     logActivity(db, 'created document', 'document', documentId, owner);
     db.exec('COMMIT');
@@ -675,12 +821,65 @@ function createDocument(db, body, context) {
     db.exec('ROLLBACK');
     throw error;
   }
-  return db.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
+  return documentDetail(db, documentId);
+}
+
+function createDocumentFolder(db, body, context) {
+  const name = String(body.name || '').trim();
+  const spaceId = String(body.space_id || '');
+  const parentFolderId = body.parent_folder_id || null;
+  if (!name || !spaceId) throw new Error('Folder name and space are required');
+  if (parentFolderId) {
+    const parent = db.prepare(`SELECT id FROM document_folders WHERE id = ? AND space_id = ?`).get(parentFolderId, spaceId);
+    if (!parent) throw new HttpError(400, 'The selected parent folder is not in this space');
+  }
+  const duplicate = db.prepare(`SELECT id FROM document_folders WHERE space_id = ? AND COALESCE(parent_folder_id, '') = COALESCE(?, '') AND name = ? COLLATE NOCASE`).get(spaceId, parentFolderId, name);
+  if (duplicate) throw new HttpError(409, 'A folder with this name already exists here');
+  const folderId = id('FOLDER');
+  const timestamp = now();
+  db.prepare(`INSERT INTO document_folders (id, space_id, parent_folder_id, name, created_at, updated_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(folderId, spaceId, parentFolderId, name, timestamp, timestamp, context.user.name);
+  logActivity(db, 'created document folder', 'folder', folderId, context.user.name);
+  return db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(folderId);
+}
+
+function updateDocumentFolder(db, folderId, body, context) {
+  const current = db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(folderId);
+  if (!current) return null;
+  const name = body.name === undefined ? current.name : String(body.name).trim();
+  const parentFolderId = body.parent_folder_id === undefined ? current.parent_folder_id : body.parent_folder_id || null;
+  if (!name) throw new HttpError(400, 'Folder name is required');
+  if (parentFolderId === folderId) throw new HttpError(400, 'A folder cannot be its own parent');
+  if (parentFolderId) {
+    const parent = db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(parentFolderId);
+    if (!parent || parent.space_id !== current.space_id) throw new HttpError(400, 'The selected parent folder is not in this space');
+    let ancestorId = parent.id;
+    while (ancestorId) {
+      if (ancestorId === folderId) throw new HttpError(400, 'A folder cannot be moved beneath one of its descendants');
+      ancestorId = db.prepare(`SELECT parent_folder_id FROM document_folders WHERE id = ?`).get(ancestorId)?.parent_folder_id || null;
+    }
+  }
+  const duplicate = db.prepare(`SELECT id FROM document_folders WHERE space_id = ? AND COALESCE(parent_folder_id, '') = COALESCE(?, '') AND name = ? COLLATE NOCASE AND id != ?`).get(current.space_id, parentFolderId, name, folderId);
+  if (duplicate) throw new HttpError(409, 'A folder with this name already exists here');
+  db.prepare(`UPDATE document_folders SET name = ?, parent_folder_id = ?, updated_at = ? WHERE id = ?`).run(name, parentFolderId, now(), folderId);
+  logActivity(db, 'updated document folder', 'folder', folderId, context.user.name);
+  return db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(folderId);
+}
+
+function deleteDocumentFolder(db, folderId, context) {
+  const folder = db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(folderId);
+  if (!folder) return false;
+  const childFolder = db.prepare(`SELECT id FROM document_folders WHERE parent_folder_id = ? LIMIT 1`).get(folderId);
+  const document = db.prepare(`SELECT id FROM documents WHERE folder_id = ? LIMIT 1`).get(folderId);
+  if (childFolder || document) throw new HttpError(409, 'Move or delete the folder contents before deleting this folder');
+  db.prepare(`DELETE FROM document_folders WHERE id = ?`).run(folderId);
+  logActivity(db, 'deleted document folder', 'folder', folderId, context.user.name);
+  return true;
 }
 
 function updateDocument(db, documentId, body, context) {
   const current = db.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
   if (!current) return null;
+  if (current.is_trashed) throw new HttpError(409, 'Restore this document before editing it');
   const next = {
     title: body.title === undefined ? current.title : String(body.title).trim(),
     content: body.content === undefined ? current.content : String(body.content),
@@ -688,26 +887,121 @@ function updateDocument(db, documentId, body, context) {
     space_id: body.space_id === undefined ? current.space_id : String(body.space_id),
     parent_id: body.parent_id === undefined ? current.parent_id : body.parent_id || null,
     linked_feature_id: body.linked_feature_id === undefined ? current.linked_feature_id : body.linked_feature_id || null,
+    folder_id: body.folder_id === undefined ? current.folder_id : body.folder_id || null,
     owner_name: current.owner_name
   };
-  if (!next.title) throw new Error('Title is required');
-  const contentChanged = next.title !== current.title || next.content !== current.content || next.status !== current.status;
+  if (!next.title) throw new HttpError(400, 'Title is required');
+  if (!DOCUMENT_STATUSES.has(next.status)) throw new HttpError(400, 'Invalid document status');
+  if (next.space_id !== current.space_id) throw new HttpError(400, 'Use the document move endpoint to change spaces');
+  validateDocumentPlacement(db, documentId, next.space_id, next.folder_id, next.parent_id);
+  const duplicate = db.prepare(`SELECT id FROM documents WHERE space_id = ? AND title = ? COLLATE NOCASE AND is_trashed = 0 AND id != ?`).get(next.space_id, next.title, documentId);
+  if (duplicate) throw new HttpError(409, 'A document with this title already exists in the selected space. Choose a unique title.');
+  const editableContentChanged = next.title !== current.title || next.content !== current.content;
+  if (next.status === 'Published' && current.status !== 'Published') throw new HttpError(400, 'Use the publish endpoint to publish a document');
+  if (current.status === 'Published' && editableContentChanged) next.status = 'Draft';
+  const contentChanged = editableContentChanged || next.status !== current.status;
+  const metadataChanged = next.folder_id !== current.folder_id || next.parent_id !== current.parent_id || next.linked_feature_id !== current.linked_feature_id;
+  if (!contentChanged && !metadataChanged) return documentDetail(db, documentId);
   const timestamp = now();
   db.exec('BEGIN');
   try {
-    db.prepare(`UPDATE documents SET title=?, content=?, status=?, space_id=?, parent_id=?, linked_feature_id=?, owner_name=?, updated_at=? WHERE id=?`)
-      .run(next.title, next.content, next.status, next.space_id, next.parent_id, next.linked_feature_id, next.owner_name, timestamp, documentId);
+    db.prepare(`UPDATE documents SET title=?, content=?, status=?, space_id=?, parent_id=?, linked_feature_id=?, owner_name=?, updated_at=?, folder_id=? WHERE id=?`)
+      .run(next.title, next.content, next.status, next.space_id, next.parent_id, next.linked_feature_id, next.owner_name, timestamp, next.folder_id, documentId);
     if (contentChanged && body.create_version !== false) {
       const version = db.prepare('SELECT COALESCE(MAX(version_number), 0) + 1 AS value FROM document_versions WHERE document_id = ?').get(documentId).value;
       db.prepare('INSERT INTO document_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id('ver'), documentId, version, next.title, next.content, next.status, context.user.name, String(body.change_summary || 'Updated page'), timestamp);
     }
-    logActivity(db, 'updated document', 'document', documentId, context.user.name);
+    logActivity(db, contentChanged ? 'updated document' : 'updated document metadata', 'document', documentId, context.user.name);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;
   }
-  return db.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
+  return documentDetail(db, documentId);
+}
+
+function moveDocument(db, documentId, body, context) {
+  const current = db.prepare(`SELECT * FROM documents WHERE id = ?`).get(documentId);
+  if (!current) return null;
+  if (current.is_trashed) throw new HttpError(409, 'Restore this document before moving it');
+  const destinationSpaceId = String(body.space_id || current.space_id);
+  const destinationFolderId = body.folder_id || null;
+  if (!canCreateInSpace(db, context, destinationSpaceId)) throw new HttpError(403, 'You cannot move this document to that space');
+  validateDocumentPlacement(db, documentId, destinationSpaceId, destinationFolderId, null);
+  const tree = documentTree(db, documentId);
+  if (destinationSpaceId !== current.space_id) {
+    for (const document of tree) {
+      const duplicate = db.prepare(`SELECT id FROM documents WHERE space_id = ? AND title = ? COLLATE NOCASE AND is_trashed = 0 AND id NOT IN (${tree.map(() => '?').join(',')}) LIMIT 1`)
+        .get(destinationSpaceId, document.title, ...tree.map(item => item.id));
+      if (duplicate) throw new HttpError(409, `A document titled "${document.title}" already exists in the destination space`);
+    }
+  }
+  const timestamp = now();
+  db.exec('BEGIN');
+  try {
+    if (destinationSpaceId !== current.space_id) {
+      db.prepare(`WITH RECURSIVE tree(id) AS (SELECT id FROM documents WHERE id = ? UNION ALL SELECT d.id FROM documents d JOIN tree ON d.parent_id = tree.id)
+        UPDATE documents SET space_id = ?, folder_id = NULL, updated_at = ? WHERE id IN (SELECT id FROM tree)`).run(documentId, destinationSpaceId, timestamp);
+      db.prepare(`UPDATE documents SET parent_id = NULL, folder_id = ? WHERE id = ?`).run(destinationFolderId, documentId);
+    } else {
+      db.prepare(`UPDATE documents SET folder_id = ?, parent_id = NULL, updated_at = ? WHERE id = ?`).run(destinationFolderId, timestamp, documentId);
+    }
+    logActivity(db, 'moved document tree', 'document', documentId, context.user.name);
+    auditSecurity(db, context, 'document.move', 'document', documentId, 'success', `${current.space_id}:${current.folder_id || 'root'} -> ${destinationSpaceId}:${destinationFolderId || 'root'}`);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return documentDetail(db, documentId);
+}
+
+function publishDocument(db, documentId, body, context) {
+  const current = db.prepare(`SELECT * FROM documents WHERE id = ?`).get(documentId);
+  if (!current) return null;
+  if (current.is_trashed) throw new HttpError(409, 'Restore this document before publishing it');
+  if (current.status === 'Archived') throw new HttpError(409, 'Archived documents must be returned to Draft before publishing');
+  const timestamp = now();
+  const versionId = id('ver');
+  const versionNumber = db.prepare('SELECT COALESCE(MAX(version_number), 0) + 1 AS value FROM document_versions WHERE document_id = ?').get(documentId).value;
+  db.exec('BEGIN');
+  try {
+    db.prepare('INSERT INTO document_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(versionId, documentId, versionNumber, current.title, current.content, 'Published', context.user.name, String(body.change_summary || 'Published document'), timestamp);
+    db.prepare(`UPDATE documents SET status = 'Published', published_version_id = ?, published_at = ?, published_by = ?, updated_at = ? WHERE id = ?`).run(versionId, timestamp, context.user.name, timestamp, documentId);
+    logActivity(db, 'published document', 'document', documentId, context.user.name);
+    auditSecurity(db, context, 'document.publish', 'document', documentId, 'success', `version ${versionNumber}`);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return documentDetail(db, documentId);
+}
+
+function trashDocument(db, documentId, context) {
+  const existing = db.prepare(`SELECT id FROM documents WHERE id = ?`).get(documentId);
+  if (!existing) return false;
+  const timestamp = now();
+  db.prepare(`WITH RECURSIVE tree(id) AS (SELECT id FROM documents WHERE id = ? UNION ALL SELECT d.id FROM documents d JOIN tree ON d.parent_id = tree.id)
+    UPDATE documents SET is_trashed = 1, deleted_at = ?, deleted_by = ?, updated_at = ? WHERE id IN (SELECT id FROM tree)`).run(documentId, timestamp, context.user.name, timestamp);
+  logActivity(db, 'moved document tree to trash', 'document', documentId, context.user.name);
+  auditSecurity(db, context, 'document.trash', 'document', documentId, 'success');
+  return true;
+}
+
+function restoreDocumentTree(db, documentId, context) {
+  const tree = documentTree(db, documentId);
+  if (!tree.length) return false;
+  for (const document of tree) {
+    const duplicate = db.prepare(`SELECT id FROM documents WHERE space_id = ? AND title = ? COLLATE NOCASE AND is_trashed = 0 AND id != ?`).get(document.space_id, document.title, document.id);
+    if (duplicate) throw new HttpError(409, `Cannot restore "${document.title}" because an active document has the same title`);
+  }
+  const timestamp = now();
+  db.prepare(`WITH RECURSIVE tree(id) AS (SELECT id FROM documents WHERE id = ? UNION ALL SELECT d.id FROM documents d JOIN tree ON d.parent_id = tree.id)
+    UPDATE documents SET is_trashed = 0, deleted_at = NULL, deleted_by = NULL, updated_at = ? WHERE id IN (SELECT id FROM tree)`).run(documentId, timestamp);
+  logActivity(db, 'restored document tree', 'document', documentId, context.user.name);
+  auditSecurity(db, context, 'document.restore', 'document', documentId, 'success');
+  return true;
 }
 
 const qaConfigs = {
@@ -759,28 +1053,62 @@ function createComment(db, documentId, body, context) {
 }
 
 function restoreDocumentVersion(db, documentId, versionId, actor = 'Patrick') {
+  const current = db.prepare(`SELECT * FROM documents WHERE id = ?`).get(documentId);
+  if (!current) throw new HttpError(404, 'Document not found');
+  if (current.is_trashed) throw new HttpError(409, 'Restore this document before restoring a version');
   const version = db.prepare('SELECT * FROM document_versions WHERE id = ? AND document_id = ?').get(versionId, documentId);
   if (!version) throw new Error('Document version not found');
+  const duplicate = db.prepare(`SELECT id FROM documents WHERE space_id = ? AND title = ? COLLATE NOCASE AND is_trashed = 0 AND id != ?`).get(current.space_id, version.title, documentId);
+  if (duplicate) throw new HttpError(409, `Cannot restore this version because an active document is titled "${version.title}"`);
   const timestamp = now();
   const nextVersion = db.prepare('SELECT COALESCE(MAX(version_number), 0) + 1 AS value FROM document_versions WHERE document_id = ?').get(documentId).value;
   db.exec('BEGIN');
   try {
-    db.prepare('UPDATE documents SET title = ?, content = ?, status = ?, updated_at = ? WHERE id = ?').run(version.title, version.content, version.status, timestamp, documentId);
-    db.prepare('INSERT INTO document_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id('ver'), documentId, nextVersion, version.title, version.content, version.status, actor, `Restored version ${version.version_number}`, timestamp);
+    db.prepare(`UPDATE documents SET title = ?, content = ?, status = 'Draft', updated_at = ? WHERE id = ?`).run(version.title, version.content, timestamp, documentId);
+    db.prepare('INSERT INTO document_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id('ver'), documentId, nextVersion, version.title, version.content, 'Draft', actor, `Restored version ${version.version_number}`, timestamp);
     logActivity(db, `restored document version ${version.version_number}`, 'document', documentId, actor);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;
   }
-  return db.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
+  return documentDetail(db, documentId);
+}
+
+function compareDocumentVersions(db, documentId, fromVersionId, toVersionId) {
+  const from = db.prepare(`SELECT * FROM document_versions WHERE id = ? AND document_id = ?`).get(fromVersionId, documentId);
+  const to = db.prepare(`SELECT * FROM document_versions WHERE id = ? AND document_id = ?`).get(toVersionId, documentId);
+  if (!from || !to) throw new HttpError(404, 'Document version not found');
+  return {
+    from,
+    to,
+    changes: {
+      title_changed: from.title !== to.title,
+      content_changed: from.content !== to.content,
+      status_changed: from.status !== to.status
+    }
+  };
+}
+
+function plainTextExcerpt(html, query) {
+  const text = String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const index = text.toLowerCase().indexOf(String(query || '').toLowerCase());
+  const start = Math.max(0, index < 0 ? 0 : index - 55);
+  return `${start ? '…' : ''}${text.slice(start, start + 150)}${start + 150 < text.length ? '…' : ''}`;
 }
 
 function search(db, context, query) {
-  const term = `%${query}%`;
+  const normalized = String(query || '').trim();
+  if (!normalized) return [];
+  const term = `%${normalized.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
   const visibleIds = new Set(visibleDocuments(db, context).filter(document => !document.is_trashed).map(document => document.id));
-  const documents = db.prepare(`SELECT id, title, status, 'document' AS type FROM documents WHERE is_trashed = 0 AND (title LIKE ? OR content LIKE ?) LIMIT 30`).all(term, term).filter(document => visibleIds.has(document.id)).slice(0, 8);
-  const features = db.prepare(`SELECT id, title, status, 'feature' AS type FROM features WHERE workspace_id = ? AND (title LIKE ? OR description LIKE ?) LIMIT 8`).all(context.workspace.id, term, term);
+  const documents = db.prepare(`SELECT d.id, d.title, d.content, d.status, d.updated_at, d.folder_id, f.name AS folder_name, s.id AS space_id, s.name AS space_name, 'document' AS type
+    FROM documents d JOIN spaces s ON s.id = d.space_id LEFT JOIN document_folders f ON f.id = d.folder_id
+    WHERE d.is_trashed = 0 AND (d.title LIKE ? ESCAPE '\\' OR d.content LIKE ? ESCAPE '\\') ORDER BY d.updated_at DESC LIMIT 50`)
+    .all(term, term).filter(document => visibleIds.has(document.id)).slice(0, 8)
+    .map(document => ({ ...document, excerpt: plainTextExcerpt(document.content, normalized), content: undefined }));
+  const features = db.prepare(`SELECT id, title, status, 'feature' AS type FROM features WHERE workspace_id = ? AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\') LIMIT 8`).all(context.workspace.id, term, term);
   return [...documents, ...features].slice(0, 12);
 }
 
@@ -1046,6 +1374,9 @@ function createApp(options = {}) {
         if (!MANAGE_QA_ROLES.has(context.membership.role)) return sendJson(response, 403, { error: 'Your role cannot ingest automation evidence.' });
         return sendJson(response, 200, ingestAutomationResults(db, await readBody(request), context));
       }
+      if (method === 'GET' && url.pathname === '/api/documents') {
+        return sendJson(response, 200, listDocuments(db, context, Object.fromEntries(url.searchParams)));
+      }
       if (method === 'POST' && url.pathname === '/api/documents') {
         const body = await readBody(request);
         if (!canCreateInSpace(db, context, body.space_id) || (body.parent_id && !canEditDocument(db, context, body.parent_id))) {
@@ -1054,8 +1385,41 @@ function createApp(options = {}) {
         }
         return sendJson(response, 201, createDocument(db, body, context));
       }
+      if (method === 'POST' && url.pathname === '/api/folders') {
+        const body = await readBody(request);
+        if (!canCreateInSpace(db, context, body.space_id)) return sendJson(response, 403, { error: 'You cannot create a folder in this space.' });
+        return sendJson(response, 201, createDocumentFolder(db, body, context));
+      }
+      if (method === 'GET' && url.pathname === '/api/folders') {
+        const documents = visibleDocuments(db, context);
+        const folders = visibleDocumentFolders(db, context, documents).filter(folder => !url.searchParams.get('space_id') || folder.space_id === url.searchParams.get('space_id'));
+        return sendJson(response, 200, { folders });
+      }
+
+      let folderMatch = url.pathname.match(/^\/api\/folders\/([^/]+)$/);
+      if (folderMatch && method === 'GET') {
+        const folder = visibleDocumentFolders(db, context, visibleDocuments(db, context)).find(item => item.id === folderMatch[1]);
+        return folder ? sendJson(response, 200, folder) : sendJson(response, 404, { error: 'Folder not found' });
+      }
+      if (folderMatch && method === 'PUT') {
+        const folder = db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(folderMatch[1]);
+        if (!folder) return sendJson(response, 404, { error: 'Folder not found' });
+        if (!canCreateInSpace(db, context, folder.space_id)) return sendJson(response, 403, { error: 'You cannot update this folder.' });
+        return sendJson(response, 200, updateDocumentFolder(db, folder.id, await readBody(request), context));
+      }
+      if (folderMatch && method === 'DELETE') {
+        const folder = db.prepare(`SELECT * FROM document_folders WHERE id = ?`).get(folderMatch[1]);
+        if (!folder) return sendJson(response, 404, { error: 'Folder not found' });
+        if (!canCreateInSpace(db, context, folder.space_id)) return sendJson(response, 403, { error: 'You cannot delete this folder.' });
+        deleteDocumentFolder(db, folder.id, context);
+        return sendJson(response, 200, { ok: true });
+      }
 
       let match = url.pathname.match(/^\/api\/documents\/([^/]+)$/);
+      if (match && method === 'GET') {
+        if (!canReadDocument(db, context, match[1])) return sendJson(response, 404, { error: 'Document not found' });
+        return sendJson(response, 200, documentDetail(db, match[1]));
+      }
       if (match && method === 'PUT') {
         if (!canEditDocument(db, context, match[1])) return sendJson(response, 403, { error: 'You cannot edit this page.' });
         const body = await readBody(request);
@@ -1066,18 +1430,28 @@ function createApp(options = {}) {
       }
       if (match && method === 'DELETE') {
         if (!canEditDocument(db, context, match[1])) return sendJson(response, 403, { error: 'You cannot delete this page.' });
-        const existing = db.prepare('SELECT id FROM documents WHERE id = ?').get(match[1]);
-        if (!existing) return sendJson(response, 404, { error: 'Document not found' });
-        db.prepare(`WITH RECURSIVE tree(id) AS (SELECT id FROM documents WHERE id = ? UNION ALL SELECT d.id FROM documents d JOIN tree t ON d.parent_id = t.id) UPDATE documents SET is_trashed = 1, updated_at = ? WHERE id IN (SELECT id FROM tree)`).run(match[1], now());
-        logActivity(db, 'moved document tree to trash', 'document', match[1], context.user.name);
+        if (!trashDocument(db, match[1], context)) return sendJson(response, 404, { error: 'Document not found' });
         return sendJson(response, 200, { ok: true });
+      }
+
+      match = url.pathname.match(/^\/api\/documents\/([^/]+)\/publish$/);
+      if (match && method === 'POST') {
+        if (!canEditDocument(db, context, match[1])) return sendJson(response, 403, { error: 'You cannot publish this document.' });
+        const result = publishDocument(db, match[1], await readBody(request), context);
+        return result ? sendJson(response, 200, result) : sendJson(response, 404, { error: 'Document not found' });
+      }
+
+      match = url.pathname.match(/^\/api\/documents\/([^/]+)\/move$/);
+      if (match && method === 'POST') {
+        if (!canEditDocument(db, context, match[1])) return sendJson(response, 403, { error: 'You cannot move this document.' });
+        const result = moveDocument(db, match[1], await readBody(request), context);
+        return result ? sendJson(response, 200, result) : sendJson(response, 404, { error: 'Document not found' });
       }
 
       match = url.pathname.match(/^\/api\/documents\/([^/]+)\/restore$/);
       if (match && method === 'POST') {
         if (!canEditDocument(db, context, match[1])) return sendJson(response, 403, { error: 'You cannot restore this page.' });
-        db.prepare(`WITH RECURSIVE tree(id) AS (SELECT id FROM documents WHERE id = ? UNION ALL SELECT d.id FROM documents d JOIN tree t ON d.parent_id = t.id) UPDATE documents SET is_trashed = 0, updated_at = ? WHERE id IN (SELECT id FROM tree)`).run(match[1], now());
-        logActivity(db, 'restored document tree', 'document', match[1], context.user.name);
+        if (!restoreDocumentTree(db, match[1], context)) return sendJson(response, 404, { error: 'Document not found' });
         return sendJson(response, 200, { ok: true });
       }
 
@@ -1091,6 +1465,19 @@ function createApp(options = {}) {
       if (match && method === 'POST') {
         if (!canEditDocument(db, context, match[1])) return sendJson(response, 403, { error: 'You cannot restore a version of this page.' });
         return sendJson(response, 200, restoreDocumentVersion(db, match[1], match[2], context.user.name));
+      }
+
+      match = url.pathname.match(/^\/api\/documents\/([^/]+)\/versions\/([^/]+)$/);
+      if (match && method === 'GET') {
+        if (!canReadDocument(db, context, match[1])) return sendJson(response, 404, { error: 'Document not found' });
+        const version = db.prepare(`SELECT * FROM document_versions WHERE id = ? AND document_id = ?`).get(match[2], match[1]);
+        return version ? sendJson(response, 200, version) : sendJson(response, 404, { error: 'Document version not found' });
+      }
+
+      match = url.pathname.match(/^\/api\/documents\/([^/]+)\/compare$/);
+      if (match && method === 'GET') {
+        if (!canReadDocument(db, context, match[1])) return sendJson(response, 404, { error: 'Document not found' });
+        return sendJson(response, 200, compareDocumentVersions(db, match[1], url.searchParams.get('from'), url.searchParams.get('to')));
       }
 
       match = url.pathname.match(/^\/api\/documents\/([^/]+)\/comments$/);
@@ -1137,7 +1524,7 @@ function createApp(options = {}) {
       if (url.pathname.startsWith('/api/')) return sendJson(response, 404, { error: 'API route not found' });
       serveStatic(url.pathname, response);
     } catch (error) {
-      const status = /required|Invalid|Unsupported/.test(error.message) ? 400 : 500;
+      const status = error.status || (/required|invalid|unsupported|already exists|unique title|selected folder|parent folder/i.test(error.message) ? 400 : 500);
       sendJson(response, status, { error: error.message });
     }
   });
@@ -1153,7 +1540,7 @@ if (require.main === module) {
   const port = Number(process.env.PORT || 4173);
   const { server } = createApp();
   server.listen(port, '127.0.0.1', () => {
-    console.log(`QA Workspace is running at http://127.0.0.1:${port}`);
+    console.log(`QA Space is running at http://127.0.0.1:${port}`);
   });
 }
 
